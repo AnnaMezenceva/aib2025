@@ -1,11 +1,8 @@
-// app.js (ES module version using transformers.js for local sentiment classification)
-
-import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.6/dist/transformers.min.js";
+// app.js (Version using Hugging Face Inference API)
 
 // Global variables
 let reviews = [];
-let apiToken = ""; // kept for UI compatibility, but not used with local inference
-let sentimentPipeline = null; // transformers.js text-classification pipeline
+let apiToken = "";
 
 // DOM elements
 const analyzeBtn = document.getElementById("analyze-btn");
@@ -14,62 +11,30 @@ const sentimentResult = document.getElementById("sentiment-result");
 const loadingElement = document.querySelector(".loading");
 const errorElement = document.getElementById("error-message");
 const apiTokenInput = document.getElementById("api-token");
-const statusElement = document.getElementById("status"); // optional status label for model loading
 
 // Initialize the app
 document.addEventListener("DOMContentLoaded", function () {
-  // Load the TSV file (Papa Parse)
+  // Load the TSV file
   loadReviews();
 
   // Set up event listeners
   analyzeBtn.addEventListener("click", analyzeRandomReview);
   apiTokenInput.addEventListener("change", saveApiToken);
 
-  // Load saved API token if exists (not used with local inference but kept for UI)
+  // Load saved API token from localStorage if exists
   const savedToken = localStorage.getItem("hfApiToken");
   if (savedToken) {
     apiTokenInput.value = savedToken;
     apiToken = savedToken;
   }
-
-  // Initialize transformers.js sentiment model
-  initSentimentModel();
 });
-
-// Initialize transformers.js text-classification pipeline with a supported model
-async function initSentimentModel() {
-  try {
-    if (statusElement) {
-      statusElement.textContent = "Loading sentiment model...";
-    }
-
-    // Use a transformers.js-supported text-classification model.
-    // Xenova/distilbert-base-uncased-finetuned-sst-2-english is a common choice.
-    sentimentPipeline = await pipeline(
-      "text-classification",
-      "Xenova/distilbert-base-uncased-finetuned-sst-2-english"
-    );
-
-    if (statusElement) {
-      statusElement.textContent = "Sentiment model ready";
-    }
-  } catch (error) {
-    console.error("Failed to load sentiment model:", error);
-    showError(
-      "Failed to load sentiment model. Please check your network connection and try again."
-    );
-    if (statusElement) {
-      statusElement.textContent = "Model load failed";
-    }
-  }
-}
 
 // Load and parse the TSV file using Papa Parse
 function loadReviews() {
   fetch("reviews_test.tsv")
     .then((response) => {
       if (!response.ok) {
-        throw new Error("Failed to load TSV file");
+        throw new Error(`Failed to load TSV file (HTTP ${response.status})`);
       }
       return response.text();
     })
@@ -77,25 +42,34 @@ function loadReviews() {
       Papa.parse(tsvData, {
         header: true,
         delimiter: "\t",
+        skipEmptyLines: true,
         complete: (results) => {
+          // Check if data and 'text' column exist
+          if (!results.data || results.data.length === 0) {
+            throw new Error("No data found in TSV file.");
+          }
           reviews = results.data
             .map((row) => row.text)
             .filter((text) => typeof text === "string" && text.trim() !== "");
+          
+          if (reviews.length === 0) {
+            throw new Error("No valid 'text' column found or reviews are empty.");
+          }
           console.log("Loaded", reviews.length, "reviews");
         },
         error: (error) => {
-          console.error("TSV parse error:", error);
-          showError("Failed to parse TSV file: " + error.message);
+          console.error("Papa Parse error:", error);
+          showError("Failed to parse TSV file. Please check the file format.");
         },
       });
     })
     .catch((error) => {
       console.error("TSV load error:", error);
-      showError("Failed to load TSV file: " + error.message);
+      showError(`Failed to load reviews: ${error.message}. Make sure reviews_test.tsv is in the same folder.`);
     });
 }
 
-// Save API token to localStorage (UI compatibility; not used with local inference)
+// Save API token to localStorage
 function saveApiToken() {
   apiToken = apiTokenInput.value.trim();
   if (apiToken) {
@@ -107,36 +81,34 @@ function saveApiToken() {
 
 // Analyze a random review
 function analyzeRandomReview() {
+  // Hide previous error
   hideError();
 
+  // Validation
   if (!Array.isArray(reviews) || reviews.length === 0) {
-    showError("No reviews available. Please try again later.");
+    showError("No reviews available. Please check that reviews_test.tsv is loaded correctly.");
     return;
   }
 
-  if (!sentimentPipeline) {
-    showError("Sentiment model is not ready yet. Please wait a moment.");
-    return;
-  }
+  // Select a random review
+  const randomIndex = Math.floor(Math.random() * reviews.length);
+  const selectedReview = reviews[randomIndex];
 
-  const selectedReview =
-    reviews[Math.floor(Math.random() * reviews.length)];
-
-  // Display the review
+  // Display the review text
   reviewText.textContent = selectedReview;
 
-  // Show loading state
+  // Update UI for loading state
   loadingElement.style.display = "block";
   analyzeBtn.disabled = true;
-  sentimentResult.innerHTML = ""; // Reset previous result
+  sentimentResult.innerHTML = ""; // Clear previous result
   sentimentResult.className = "sentiment-result"; // Reset classes
 
-  // Call local sentiment model (transformers.js)
-  analyzeSentiment(selectedReview)
-    .then((result) => displaySentiment(result))
+  // Call the Hugging Face API
+  analyzeSentimentWithHF(selectedReview)
+    .then((apiResponse) => displaySentiment(apiResponse))
     .catch((error) => {
-      console.error("Error:", error);
-      showError(error.message || "Failed to analyze sentiment.");
+      console.error("API Error:", error);
+      showError(error.message || "Failed to analyze sentiment. Check your token or network.");
     })
     .finally(() => {
       loadingElement.style.display = "none";
@@ -144,51 +116,81 @@ function analyzeRandomReview() {
     });
 }
 
-// Call local transformers.js pipeline for sentiment classification
-async function analyzeSentiment(text) {
-  if (!sentimentPipeline) {
-    throw new Error("Sentiment model is not initialized.");
+// Call Hugging Face Inference API
+async function analyzeSentimentWithHF(text) {
+  const apiUrl = "https://api-inference.huggingface.co/models/siebert/sentiment-roberta-large-english";
+  
+  // Prepare headers
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  // Add Authorization header only if token is provided
+  if (apiToken) {
+    headers["Authorization"] = `Bearer ${apiToken}`;
   }
 
-  // transformers.js text-classification pipeline returns:
-  // [{ label: 'POSITIVE', score: 0.99 }, ...]
-  const output = await sentimentPipeline(text);
+  // Prepare request body
+  const body = JSON.stringify({ inputs: text });
 
-  if (!Array.isArray(output) || output.length === 0) {
-    throw new Error("Invalid sentiment output from local model.");
+  // Make the API call
+  const response = await fetch(apiUrl, {
+    method: "POST",
+    headers: headers,
+    body: body,
+  });
+
+  // Handle HTTP errors
+  if (!response.ok) {
+    let errorMsg = `API Error (HTTP ${response.status})`;
+    try {
+      const errorData = await response.json();
+      errorMsg = errorData.error || errorMsg;
+    } catch (e) {
+      // Ignore if response is not JSON
+    }
+    throw new Error(errorMsg);
   }
 
-  // Wrap to match [[{ label, score }]] shape expected by displaySentiment
-  return [output];
+  // Parse the JSON response
+  let result;
+  try {
+    result = await response.json();
+  } catch (e) {
+    throw new Error("Invalid JSON response from API.");
+  }
+
+  // The API returns an array of arrays, e.g., [[{label: "POSITIVE", score: 0.99}]]
+  if (!Array.isArray(result) || result.length === 0 || !Array.isArray(result[0]) || result[0].length === 0) {
+    throw new Error("Unexpected response format from API.");
+  }
+
+  // Return the result in the format expected by displaySentiment (an array of predictions)
+  return result;
 }
 
 // Display sentiment result
-function displaySentiment(result) {
-  // Default to neutral if we can't parse the result
+function displaySentiment(apiResult) {
+  // Default to neutral
   let sentiment = "neutral";
   let score = 0.5;
   let label = "NEUTRAL";
 
+  // Extract the first prediction from the response
   // Expected format: [[{label: 'POSITIVE', score: 0.99}]]
   if (
-    Array.isArray(result) &&
-    result.length > 0 &&
-    Array.isArray(result[0]) &&
-    result[0].length > 0
+    Array.isArray(apiResult) &&
+    apiResult.length > 0 &&
+    Array.isArray(apiResult[0]) &&
+    apiResult[0].length > 0
   ) {
-    const sentimentData = result[0][0];
+    const prediction = apiResult[0][0];
 
-    if (sentimentData && typeof sentimentData === "object") {
-      label =
-        typeof sentimentData.label === "string"
-          ? sentimentData.label.toUpperCase()
-          : "NEUTRAL";
-      score =
-        typeof sentimentData.score === "number"
-          ? sentimentData.score
-          : 0.5;
+    if (prediction && typeof prediction === "object") {
+      label = prediction.label ? prediction.label.toUpperCase() : "NEUTRAL";
+      score = typeof prediction.score === "number" ? prediction.score : 0.5;
 
-      // Determine sentiment bucket
+      // Determine final sentiment based on rules
       if (label === "POSITIVE" && score > 0.5) {
         sentiment = "positive";
       } else if (label === "NEGATIVE" && score > 0.5) {
@@ -199,11 +201,11 @@ function displaySentiment(result) {
     }
   }
 
-  // Update UI
+  // Update the UI with the result
   sentimentResult.classList.add(sentiment);
   sentimentResult.innerHTML = `
         <i class="fas ${getSentimentIcon(sentiment)} icon"></i>
-        <span>${label} (${(score * 100).toFixed(1)}% confidence)</span>
+        <span>${sentiment.toUpperCase()} (${(score * 100).toFixed(1)}% confidence)</span>
     `;
 }
 
