@@ -21,6 +21,20 @@ const errorDiv = document.getElementById('error');
 // Инициализация приложения
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('App initialized');
+    
+    // Проверяем, что все элементы найдены
+    console.log('Elements found:', {
+        randomReviewBtn: !!randomReviewBtn,
+        analyzeSentimentBtn: !!analyzeSentimentBtn,
+        countNounsBtn: !!countNounsBtn,
+        reviewTextElement: !!reviewTextElement,
+        sentimentResult: !!sentimentResult,
+        nounResult: !!nounResult,
+        tokenInput: !!tokenInput,
+        spinner: !!spinner,
+        errorDiv: !!errorDiv
+    });
+    
     await loadReviews();
     
     // Загружаем сохраненный токен из localStorage
@@ -59,6 +73,9 @@ async function loadReviews() {
         
         if (reviews.length === 0) {
             showError('No valid reviews found in the file');
+        } else {
+            // Показываем первый отзыв для теста
+            console.log('First review sample:', reviews[0].text.substring(0, 100));
         }
         
     } catch (error) {
@@ -106,50 +123,73 @@ function resetResults() {
 
 // Анализ тональности
 async function analyzeSentiment() {
-    console.log('Analyzing sentiment');
+    console.log('Analyzing sentiment button clicked');
+    
     if (!currentReview) {
         showError('Please select a review first');
         return;
     }
     
-    const prompt = `Classify the sentiment of this review as either "positive", "negative", or "neutral". Reply with only one word. Review: "${currentReview.text}"`;
-    const result = await callApi(prompt, 'sentiment');
+    // Пробуем разные промпты для лучшего результата
+    const prompts = [
+        `Analyze the sentiment of this review. Reply with ONLY ONE WORD: "positive", "negative", or "neutral". Review: "${currentReview.text}"`,
+        `What is the sentiment of this text? Answer with one word only (positive/negative/neutral): "${currentReview.text}"`,
+        `Classify this review as positive, negative, or neutral. Return just the word: "${currentReview.text}"`
+    ];
     
-    if (result) {
-        updateSentimentResult(result);
-        
-        // Сохраняем результат в Google Sheets
-        await saveToGoogleSheets({
-            reviewText: currentReview.text,
-            analysisType: 'sentiment',
-            result: result,
-            prompt: prompt
-        });
+    // Пробуем каждый промпт по очереди
+    for (const prompt of prompts) {
+        const result = await callApi(prompt, 'sentiment');
+        if (result) {
+            updateSentimentResult(result);
+            
+            // Сохраняем результат в Google Sheets
+            await saveToGoogleSheets({
+                reviewText: currentReview.text,
+                analysisType: 'sentiment',
+                result: result,
+                prompt: prompt
+            });
+            return; // Выходим после успешного анализа
+        }
     }
+    
+    // Если ничего не сработало
+    showError('Could not analyze sentiment. Please try again with a token.');
 }
 
 // Подсчет существительных
 async function countNouns() {
-    console.log('Counting nouns');
+    console.log('Counting nouns button clicked');
+    
     if (!currentReview) {
         showError('Please select a review first');
         return;
     }
     
-    const prompt = `Count the number of nouns in this review. Return only one word: "high" if more than 15, "medium" if between 6 and 15, or "low" if less than 6. Review: "${currentReview.text}"`;
-    const result = await callApi(prompt, 'nouns');
+    // Пробуем разные промпты
+    const prompts = [
+        `Count the nouns in this review. Reply with ONLY ONE WORD: "high" (>15 nouns), "medium" (6-15 nouns), or "low" (<6 nouns). Review: "${currentReview.text}"`,
+        `How many nouns are in this text? Answer with one word only (high/medium/low): "${currentReview.text}"`,
+        `Classify the noun count as high, medium, or low for: "${currentReview.text}"`
+    ];
     
-    if (result) {
-        updateNounResult(result);
-        
-        // Сохраняем результат в Google Sheets
-        await saveToGoogleSheets({
-            reviewText: currentReview.text,
-            analysisType: 'nouns',
-            result: result,
-            prompt: prompt
-        });
+    for (const prompt of prompts) {
+        const result = await callApi(prompt, 'nouns');
+        if (result) {
+            updateNounResult(result);
+            
+            await saveToGoogleSheets({
+                reviewText: currentReview.text,
+                analysisType: 'nouns',
+                result: result,
+                prompt: prompt
+            });
+            return;
+        }
     }
+    
+    showError('Could not count nouns. Please try again with a token.');
 }
 
 // Вызов API Hugging Face
@@ -161,7 +201,7 @@ async function callApi(prompt, type) {
     disableButtons(true);
     
     try {
-        console.log('Calling API with prompt:', prompt.substring(0, 100) + '...');
+        console.log('Calling API with prompt type:', type);
         
         const headers = {
             'Content-Type': 'application/json'
@@ -171,7 +211,8 @@ async function callApi(prompt, type) {
             headers['Authorization'] = `Bearer ${token}`;
         }
         
-        const response = await fetch('https://api-inference.huggingface.co/models/tiiuae/falcon-7b-instruct', {
+        // Используем другую модель, которая лучше подходит для классификации
+        const response = await fetch('https://api-inference.huggingface.co/models/gpt2', {
             method: 'POST',
             headers: headers,
             body: JSON.stringify({ 
@@ -187,29 +228,27 @@ async function callApi(prompt, type) {
         console.log('API response status:', response.status);
         
         if (response.status === 401 || response.status === 403) {
-            throw new Error('Invalid or missing API token. Please check your token.');
+            throw new Error('Invalid or missing API token');
         }
         
         if (response.status === 429) {
-            throw new Error('Rate limit exceeded. Please try again later or add an API token.');
+            throw new Error('Rate limit exceeded. Please add an API token.');
         }
         
         if (response.status === 503) {
-            throw new Error('Model is loading. Please try again in a few seconds.');
+            console.log('Model loading, waiting 5 seconds...');
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            return callApi(prompt, type); // Повторяем запрос
         }
         
         if (!response.ok) {
-            throw new Error(`API error: ${response.status} ${response.statusText}`);
+            throw new Error(`API error: ${response.status}`);
         }
         
         const data = await response.json();
         console.log('API response data:', data);
         
-        if (data.error) {
-            throw new Error(data.error);
-        }
-        
-        // Извлекаем сгенерированный текст
+        // Извлекаем текст ответа
         let resultText = '';
         if (Array.isArray(data) && data.length > 0) {
             resultText = data[0]?.generated_text || '';
@@ -217,8 +256,10 @@ async function callApi(prompt, type) {
             resultText = data.generated_text;
         }
         
-        // Очищаем результат
-        resultText = resultText.toLowerCase().trim();
+        // Убираем промпт из результата
+        resultText = resultText.replace(prompt, '').toLowerCase().trim();
+        
+        console.log('Cleaned result text:', resultText);
         
         // Извлекаем ключевое слово
         let keyword = '';
@@ -226,16 +267,38 @@ async function callApi(prompt, type) {
             if (resultText.includes('positive')) keyword = 'positive';
             else if (resultText.includes('negative')) keyword = 'negative';
             else if (resultText.includes('neutral')) keyword = 'neutral';
-            else keyword = 'neutral';
+            else {
+                // Если не нашли, пробуем другие варианты
+                const words = resultText.split(/[\s,.;:!?]+/);
+                for (const word of words) {
+                    if (['positive', 'negative', 'neutral'].includes(word)) {
+                        keyword = word;
+                        break;
+                    }
+                }
+            }
         } else if (type === 'nouns') {
             if (resultText.includes('high')) keyword = 'high';
             else if (resultText.includes('medium')) keyword = 'medium';
             else if (resultText.includes('low')) keyword = 'low';
-            else keyword = 'medium';
+            else {
+                const words = resultText.split(/[\s,.;:!?]+/);
+                for (const word of words) {
+                    if (['high', 'medium', 'low'].includes(word)) {
+                        keyword = word;
+                        break;
+                    }
+                }
+            }
         }
         
-        console.log('Extracted keyword:', keyword);
-        return keyword;
+        if (keyword) {
+            console.log('Found keyword:', keyword);
+            return keyword;
+        } else {
+            console.log('No keyword found in:', resultText);
+            return null;
+        }
         
     } catch (error) {
         console.error('API call error:', error);
@@ -251,22 +314,21 @@ async function callApi(prompt, type) {
 function updateSentimentResult(text) {
     console.log('Updating sentiment with:', text);
     let icon = '❓';
-    let cleanText = text.toLowerCase().trim();
     
-    if (cleanText.includes('positive')) {
+    if (text === 'positive') {
         icon = '👍';
         sentimentResult.textContent = icon;
         sentimentResult.className = 'result-value positive';
-    } else if (cleanText.includes('negative')) {
+    } else if (text === 'negative') {
         icon = '👎';
         sentimentResult.textContent = icon;
         sentimentResult.className = 'result-value negative';
-    } else if (cleanText.includes('neutral')) {
+    } else if (text === 'neutral') {
         icon = '❓';
         sentimentResult.textContent = icon;
         sentimentResult.className = 'result-value neutral';
     } else {
-        sentimentResult.textContent = icon;
+        sentimentResult.textContent = '❓';
         sentimentResult.className = 'result-value';
     }
 }
@@ -275,22 +337,21 @@ function updateSentimentResult(text) {
 function updateNounResult(text) {
     console.log('Updating nouns with:', text);
     let icon = '❓';
-    let cleanText = text.toLowerCase().trim();
     
-    if (cleanText.includes('high')) {
+    if (text === 'high') {
         icon = '🟢';
         nounResult.textContent = icon;
         nounResult.className = 'result-value high';
-    } else if (cleanText.includes('medium')) {
+    } else if (text === 'medium') {
         icon = '🟡';
         nounResult.textContent = icon;
         nounResult.className = 'result-value medium';
-    } else if (cleanText.includes('low')) {
+    } else if (text === 'low') {
         icon = '🔴';
         nounResult.textContent = icon;
         nounResult.className = 'result-value low';
     } else {
-        nounResult.textContent = icon;
+        nounResult.textContent = '❓';
         nounResult.className = 'result-value';
     }
 }
@@ -302,26 +363,23 @@ async function saveToGoogleSheets(data) {
     // Создаем индикатор сохранения
     const saveIndicator = document.createElement('div');
     saveIndicator.className = 'save-indicator';
-    saveIndicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving to Google Sheets...';
+    saveIndicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
     
-    // Находим контейнер для индикатора или добавляем в results
-    const container = document.getElementById('saveIndicatorContainer') || document.querySelector('.results');
-    container.appendChild(saveIndicator);
+    // Добавляем после результатов
+    const resultsDiv = document.querySelector('.results');
+    resultsDiv.parentNode.insertBefore(saveIndicator, resultsDiv.nextSibling);
     
     try {
-        // Подготавливаем данные для отправки
         const sheetData = {
             timestamp: new Date().toLocaleString(),
-            reviewText: data.reviewText,
+            reviewText: data.reviewText.substring(0, 200), // Ограничиваем длину
             analysisType: data.analysisType === 'sentiment' ? 'Sentiment Analysis' : 'Noun Count',
             result: data.result,
-            prompt: data.prompt,
-            tokenUsed: !!token
+            tokenUsed: token ? 'Yes' : 'No'
         };
         
         console.log('Saving to Google Sheets:', sheetData);
         
-        // Отправляем в Google Sheets
         await fetch(GOOGLE_SHEETS_URL, {
             method: 'POST',
             mode: 'no-cors',
@@ -331,8 +389,7 @@ async function saveToGoogleSheets(data) {
             body: JSON.stringify(sheetData)
         });
         
-        // Показываем успех
-        saveIndicator.innerHTML = '<i class="fas fa-check" style="color: green;"></i> Saved to Google Sheets!';
+        saveIndicator.innerHTML = '<i class="fas fa-check" style="color: green;"></i> Saved!';
         
         setTimeout(() => {
             if (saveIndicator.parentNode) {
@@ -354,12 +411,9 @@ async function saveToGoogleSheets(data) {
 
 // Блокировка/разблокировка кнопок
 function disableButtons(disabled) {
-    const buttons = [randomReviewBtn, analyzeSentimentBtn, countNounsBtn];
-    buttons.forEach(button => {
-        if (button) {
-            button.disabled = disabled;
-        }
-    });
+    randomReviewBtn.disabled = disabled;
+    analyzeSentimentBtn.disabled = disabled;
+    countNounsBtn.disabled = disabled;
 }
 
 // Показ ошибки
@@ -380,3 +434,11 @@ function showError(message) {
 function hideError() {
     errorDiv.style.display = 'none';
 }
+
+// Добавляем тестовую функцию для проверки
+window.testApp = function() {
+    console.log('Testing app...');
+    console.log('Reviews loaded:', reviews.length);
+    console.log('Current review:', currentReview);
+    console.log('Token:', tokenInput.value);
+};
