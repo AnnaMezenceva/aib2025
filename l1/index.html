@@ -103,6 +103,12 @@
         button:active {
             transform: translateY(0);
         }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
         
         .review-section {
             margin-bottom: 25px;
@@ -239,9 +245,9 @@
         <div class="api-section">
             <h2>Hugging Face API Setup</h2>
             <div class="api-input">
-                <label for="api-token">Enter your Hugging Face API Token:</label>
+                <label for="api-token">Enter your Hugging Face API Token (optional for free tier):</label>
                 <input type="text" id="api-token" placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
-                <p><small>Your token is stored only in your browser and is never sent to our servers.</small></p>
+                <p><small>Your token is stored only in your browser and is never sent to our servers. Free tier may be slower.</small></p>
             </div>
         </div>
         
@@ -278,8 +284,9 @@
     </div>
     
     <footer>
-        <p>This app uses the distilbert-base-uncased-finetuned-sst-2-english model from Hugging Face</p>
+        <p>This app uses the siebert/sentiment-roberta-large-english model from Hugging Face</p>
     </footer>
 
-    <script type="module" src="app.js"></script></body>
+    <script src="app.js"></script>
+</body>
 </html>
