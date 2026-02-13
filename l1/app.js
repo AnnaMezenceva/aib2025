@@ -5,7 +5,7 @@ let reviews = [];
 let currentReview = null;
 
 // ЗАМЕНИТЕ ЭТОТ URL НА ВАШ РЕАЛЬНЫЙ URL ОТ GOOGLE APPS SCRIPT!
-const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxFB5LX_64UjMbRN5W2xTZEHlhw4TjatscIX2NCCm3pfqj_3ftj3OhCDzpQPlXj9kElRg/exec";
+const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbzVJqtpbI6EwzylWKYJAj5oQTeOXDQQ7DJdJsnGyMkuruXKcHaT1Ml6nVd8oH7VErFZ3w/exec";
 
 // DOM элементы
 const randomReviewBtn = document.getElementById('randomReview');
