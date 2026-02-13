@@ -20,6 +20,7 @@ const errorDiv = document.getElementById('error');
 
 // Инициализация приложения
 document.addEventListener('DOMContentLoaded', async () => {
+    console.log('App initialized');
     await loadReviews();
     
     // Загружаем сохраненный токен из localStorage
@@ -33,11 +34,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     analyzeSentimentBtn.addEventListener('click', analyzeSentiment);
     countNounsBtn.addEventListener('click', countNouns);
     tokenInput.addEventListener('change', saveApiToken);
+    
+    console.log('Event listeners added');
 });
 
 // Загрузка отзывов из TSV файла
 async function loadReviews() {
     try {
+        console.log('Loading reviews...');
         const response = await fetch('reviews_test.tsv');
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
@@ -53,7 +57,12 @@ async function loadReviews() {
         reviews = parsed.data.filter(review => review.text && review.text.trim() !== '');
         console.log(`Loaded ${reviews.length} reviews`);
         
+        if (reviews.length === 0) {
+            showError('No valid reviews found in the file');
+        }
+        
     } catch (error) {
+        console.error('Error loading reviews:', error);
         showError('Failed to load reviews data: ' + error.message);
     }
 }
@@ -63,21 +72,25 @@ function saveApiToken() {
     const token = tokenInput.value.trim();
     if (token) {
         localStorage.setItem('hfApiToken', token);
+        console.log('Token saved');
     } else {
         localStorage.removeItem('hfApiToken');
+        console.log('Token removed');
     }
 }
 
 // Выбор случайного отзыва
 function selectRandomReview() {
+    console.log('Selecting random review');
     if (reviews.length === 0) {
-        showError('No reviews available');
+        showError('No reviews available. Please check the TSV file.');
         return;
     }
     
     const randomIndex = Math.floor(Math.random() * reviews.length);
     currentReview = reviews[randomIndex];
     reviewTextElement.textContent = currentReview.text;
+    console.log('Selected review:', currentReview.text.substring(0, 50) + '...');
     
     resetResults();
     hideError();
@@ -87,23 +100,26 @@ function selectRandomReview() {
 function resetResults() {
     sentimentResult.textContent = '❓';
     nounResult.textContent = '❓';
+    sentimentResult.className = 'result-value';
+    nounResult.className = 'result-value';
 }
 
 // Анализ тональности
 async function analyzeSentiment() {
+    console.log('Analyzing sentiment');
     if (!currentReview) {
         showError('Please select a review first');
         return;
     }
     
-    const prompt = `Classify this review as positive, negative, or neutral. Return only one word. Review: "${currentReview.text}"`;
+    const prompt = `Classify the sentiment of this review as either "positive", "negative", or "neutral". Reply with only one word. Review: "${currentReview.text}"`;
     const result = await callApi(prompt, 'sentiment');
     
     if (result) {
         updateSentimentResult(result);
         
         // Сохраняем результат в Google Sheets
-        saveToGoogleSheets({
+        await saveToGoogleSheets({
             reviewText: currentReview.text,
             analysisType: 'sentiment',
             result: result,
@@ -114,19 +130,20 @@ async function analyzeSentiment() {
 
 // Подсчет существительных
 async function countNouns() {
+    console.log('Counting nouns');
     if (!currentReview) {
         showError('Please select a review first');
         return;
     }
     
-    const prompt = `Count the nouns in this review and return only **High** (>15), **Medium** (6-15), or **Low** (<6). Review: "${currentReview.text}"`;
+    const prompt = `Count the number of nouns in this review. Return only one word: "high" if more than 15, "medium" if between 6 and 15, or "low" if less than 6. Review: "${currentReview.text}"`;
     const result = await callApi(prompt, 'nouns');
     
     if (result) {
         updateNounResult(result);
         
         // Сохраняем результат в Google Sheets
-        saveToGoogleSheets({
+        await saveToGoogleSheets({
             reviewText: currentReview.text,
             analysisType: 'nouns',
             result: result,
@@ -144,6 +161,8 @@ async function callApi(prompt, type) {
     disableButtons(true);
     
     try {
+        console.log('Calling API with prompt:', prompt.substring(0, 100) + '...');
+        
         const headers = {
             'Content-Type': 'application/json'
         };
@@ -158,19 +177,21 @@ async function callApi(prompt, type) {
             body: JSON.stringify({ 
                 inputs: prompt,
                 parameters: {
-                    max_new_tokens: 50,
+                    max_new_tokens: 10,
                     temperature: 0.1,
                     return_full_text: false
                 }
             })
         });
         
+        console.log('API response status:', response.status);
+        
         if (response.status === 401 || response.status === 403) {
-            throw new Error('Invalid or missing API token');
+            throw new Error('Invalid or missing API token. Please check your token.');
         }
         
         if (response.status === 429) {
-            throw new Error('Rate limit exceeded. Please try again later.');
+            throw new Error('Rate limit exceeded. Please try again later or add an API token.');
         }
         
         if (response.status === 503) {
@@ -182,6 +203,7 @@ async function callApi(prompt, type) {
         }
         
         const data = await response.json();
+        console.log('API response data:', data);
         
         if (data.error) {
             throw new Error(data.error);
@@ -195,15 +217,28 @@ async function callApi(prompt, type) {
             resultText = data.generated_text;
         }
         
-        // Удаляем промпт из результата, если он там есть
-        resultText = resultText.replace(prompt, '').trim().toLowerCase();
+        // Очищаем результат
+        resultText = resultText.toLowerCase().trim();
         
-        // Извлекаем первое слово или фразу
-        const firstWord = resultText.split(/[\s,.;:!?]+/)[0] || '';
+        // Извлекаем ключевое слово
+        let keyword = '';
+        if (type === 'sentiment') {
+            if (resultText.includes('positive')) keyword = 'positive';
+            else if (resultText.includes('negative')) keyword = 'negative';
+            else if (resultText.includes('neutral')) keyword = 'neutral';
+            else keyword = 'neutral';
+        } else if (type === 'nouns') {
+            if (resultText.includes('high')) keyword = 'high';
+            else if (resultText.includes('medium')) keyword = 'medium';
+            else if (resultText.includes('low')) keyword = 'low';
+            else keyword = 'medium';
+        }
         
-        return firstWord;
+        console.log('Extracted keyword:', keyword);
+        return keyword;
         
     } catch (error) {
+        console.error('API call error:', error);
         showError(error.message);
         return null;
     } finally {
@@ -214,47 +249,49 @@ async function callApi(prompt, type) {
 
 // Обновление результата тональности
 function updateSentimentResult(text) {
+    console.log('Updating sentiment with:', text);
     let icon = '❓';
     let cleanText = text.toLowerCase().trim();
     
-    if (cleanText.includes('positive') || cleanText === 'positive') {
+    if (cleanText.includes('positive')) {
         icon = '👍';
         sentimentResult.textContent = icon;
-        sentimentResult.className = 'positive';
-    } else if (cleanText.includes('negative') || cleanText === 'negative') {
+        sentimentResult.className = 'result-value positive';
+    } else if (cleanText.includes('negative')) {
         icon = '👎';
         sentimentResult.textContent = icon;
-        sentimentResult.className = 'negative';
-    } else if (cleanText.includes('neutral') || cleanText === 'neutral') {
+        sentimentResult.className = 'result-value negative';
+    } else if (cleanText.includes('neutral')) {
         icon = '❓';
         sentimentResult.textContent = icon;
-        sentimentResult.className = 'neutral';
+        sentimentResult.className = 'result-value neutral';
     } else {
         sentimentResult.textContent = icon;
-        sentimentResult.className = '';
+        sentimentResult.className = 'result-value';
     }
 }
 
 // Обновление результата подсчета существительных
 function updateNounResult(text) {
+    console.log('Updating nouns with:', text);
     let icon = '❓';
     let cleanText = text.toLowerCase().trim();
     
-    if (cleanText.includes('high') || cleanText === 'high') {
+    if (cleanText.includes('high')) {
         icon = '🟢';
         nounResult.textContent = icon;
-        nounResult.className = 'high';
-    } else if (cleanText.includes('medium') || cleanText === 'medium') {
+        nounResult.className = 'result-value high';
+    } else if (cleanText.includes('medium')) {
         icon = '🟡';
         nounResult.textContent = icon;
-        nounResult.className = 'medium';
-    } else if (cleanText.includes('low') || cleanText === 'low') {
+        nounResult.className = 'result-value medium';
+    } else if (cleanText.includes('low')) {
         icon = '🔴';
         nounResult.textContent = icon;
-        nounResult.className = 'low';
+        nounResult.className = 'result-value low';
     } else {
         nounResult.textContent = icon;
-        nounResult.className = '';
+        nounResult.className = 'result-value';
     }
 }
 
@@ -265,19 +302,24 @@ async function saveToGoogleSheets(data) {
     // Создаем индикатор сохранения
     const saveIndicator = document.createElement('div');
     saveIndicator.className = 'save-indicator';
-    saveIndicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
-    document.querySelector('.results').appendChild(saveIndicator);
+    saveIndicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving to Google Sheets...';
+    
+    // Находим контейнер для индикатора или добавляем в results
+    const container = document.getElementById('saveIndicatorContainer') || document.querySelector('.results');
+    container.appendChild(saveIndicator);
     
     try {
         // Подготавливаем данные для отправки
         const sheetData = {
-            timestamp: new Date().toISOString(),
+            timestamp: new Date().toLocaleString(),
             reviewText: data.reviewText,
             analysisType: data.analysisType === 'sentiment' ? 'Sentiment Analysis' : 'Noun Count',
             result: data.result,
             prompt: data.prompt,
             tokenUsed: !!token
         };
+        
+        console.log('Saving to Google Sheets:', sheetData);
         
         // Отправляем в Google Sheets
         await fetch(GOOGLE_SHEETS_URL, {
@@ -290,7 +332,7 @@ async function saveToGoogleSheets(data) {
         });
         
         // Показываем успех
-        saveIndicator.innerHTML = '<i class="fas fa-check" style="color: green;"></i> Saved!';
+        saveIndicator.innerHTML = '<i class="fas fa-check" style="color: green;"></i> Saved to Google Sheets!';
         
         setTimeout(() => {
             if (saveIndicator.parentNode) {
@@ -314,18 +356,27 @@ async function saveToGoogleSheets(data) {
 function disableButtons(disabled) {
     const buttons = [randomReviewBtn, analyzeSentimentBtn, countNounsBtn];
     buttons.forEach(button => {
-        if (button) button.disabled = disabled;
+        if (button) {
+            button.disabled = disabled;
+        }
     });
 }
 
 // Показ ошибки
 function showError(message) {
-    errorDiv.textContent = message;
+    console.error('Error:', message);
+    const errorSpan = errorDiv.querySelector('span') || document.createElement('span');
+    errorSpan.textContent = message;
+    if (!errorDiv.querySelector('span')) {
+        errorDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> <span></span>';
+        errorDiv.querySelector('span').textContent = message;
+    } else {
+        errorDiv.querySelector('span').textContent = message;
+    }
     errorDiv.style.display = 'block';
 }
 
 // Скрытие ошибки
 function hideError() {
-    errorDiv.textContent = '';
     errorDiv.style.display = 'none';
 }
