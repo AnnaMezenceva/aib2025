@@ -1,10 +1,12 @@
-// app.js (Version using Hugging Face Inference API)
+// app.js (версия с сохранением результатов в Google Sheets)
 
-// Global variables
+// Глобальные переменные
 let reviews = [];
 let apiToken = "";
+// ЗАМЕНИТЕ ЭТОТ URL НА ВАШ РЕАЛЬНЫЙ URL ОТ GOOGLE APPS SCRIPT!
+const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxFB5LX_64UjMbRN5W2xTZEHlhw4TjatscIX2NCCm3pfqj_3ftj3OhCDzpQPlXj9kElRg/exec";
 
-// DOM elements
+// DOM элементы
 const analyzeBtn = document.getElementById("analyze-btn");
 const reviewText = document.getElementById("review-text");
 const sentimentResult = document.getElementById("sentiment-result");
@@ -207,6 +209,64 @@ function displaySentiment(apiResult) {
         <i class="fas ${getSentimentIcon(sentiment)} icon"></i>
         <span>${sentiment.toUpperCase()} (${(score * 100).toFixed(1)}% confidence)</span>
     `;
+
+  // СОХРАНЯЕМ РЕЗУЛЬТАТ В GOOGLE SHEETS
+  saveToGoogleSheets({
+    reviewText: reviewText.textContent,
+    sentiment: sentiment,
+    confidence: (score * 100).toFixed(1),
+    label: label,
+    tokenUsed: !!apiToken
+  });
+}
+
+// НОВАЯ ФУНКЦИЯ: Сохранение в Google Sheets
+async function saveToGoogleSheets(data) {
+  // Создаем индикатор сохранения
+  const saveIndicator = document.createElement('div');
+  saveIndicator.className = 'save-indicator';
+  saveIndicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving to Google Sheets...';
+  sentimentResult.appendChild(saveIndicator);
+
+  try {
+    // Отправляем данные в Google Apps Script
+    const response = await fetch(GOOGLE_SHEETS_URL, {
+      method: 'POST',
+      mode: 'no-cors', // Важно для Google Apps Script!
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        timestamp: new Date().toISOString(),
+        reviewText: data.reviewText,
+        sentiment: data.sentiment,
+        confidence: data.confidence,
+        label: data.label,
+        tokenUsed: data.tokenUsed
+      })
+    });
+
+    // Показываем успешное сохранение
+    setTimeout(() => {
+      if (saveIndicator.parentNode) {
+        saveIndicator.innerHTML = '<i class="fas fa-check" style="color: green;"></i> Saved to Google Sheets!';
+        setTimeout(() => {
+          if (saveIndicator.parentNode) {
+            saveIndicator.remove();
+          }
+        }, 2000);
+      }
+    }, 1000);
+
+  } catch (error) {
+    console.error('Error saving to Google Sheets:', error);
+    saveIndicator.innerHTML = '<i class="fas fa-exclamation-triangle" style="color: orange;"></i> Save failed';
+    setTimeout(() => {
+      if (saveIndicator.parentNode) {
+        saveIndicator.remove();
+      }
+    }, 3000);
+  }
 }
 
 // Get appropriate icon for sentiment bucket
