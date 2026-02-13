@@ -1,293 +1,331 @@
-// app.js (версия с сохранением результатов в Google Sheets)
+// app.js - Версия с анализом тональности, подсчетом существительных и сохранением в Google Sheets
 
 // Глобальные переменные
 let reviews = [];
-let apiToken = "";
+let currentReview = null;
+
 // ЗАМЕНИТЕ ЭТОТ URL НА ВАШ РЕАЛЬНЫЙ URL ОТ GOOGLE APPS SCRIPT!
 const GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxFB5LX_64UjMbRN5W2xTZEHlhw4TjatscIX2NCCm3pfqj_3ftj3OhCDzpQPlXj9kElRg/exec";
 
 // DOM элементы
-const analyzeBtn = document.getElementById("analyze-btn");
-const reviewText = document.getElementById("review-text");
-const sentimentResult = document.getElementById("sentiment-result");
-const loadingElement = document.querySelector(".loading");
-const errorElement = document.getElementById("error-message");
-const apiTokenInput = document.getElementById("api-token");
+const randomReviewBtn = document.getElementById('randomReview');
+const analyzeSentimentBtn = document.getElementById('analyzeSentiment');
+const countNounsBtn = document.getElementById('countNouns');
+const reviewTextElement = document.getElementById('reviewText');
+const sentimentResult = document.getElementById('sentimentResult');
+const nounResult = document.getElementById('nounResult');
+const tokenInput = document.getElementById('token');
+const spinner = document.getElementById('spinner');
+const errorDiv = document.getElementById('error');
 
-// Initialize the app
-document.addEventListener("DOMContentLoaded", function () {
-  // Load the TSV file
-  loadReviews();
-
-  // Set up event listeners
-  analyzeBtn.addEventListener("click", analyzeRandomReview);
-  apiTokenInput.addEventListener("change", saveApiToken);
-
-  // Load saved API token from localStorage if exists
-  const savedToken = localStorage.getItem("hfApiToken");
-  if (savedToken) {
-    apiTokenInput.value = savedToken;
-    apiToken = savedToken;
-  }
+// Инициализация приложения
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadReviews();
+    
+    // Загружаем сохраненный токен из localStorage
+    const savedToken = localStorage.getItem('hfApiToken');
+    if (savedToken) {
+        tokenInput.value = savedToken;
+    }
+    
+    // Добавляем обработчики событий
+    randomReviewBtn.addEventListener('click', selectRandomReview);
+    analyzeSentimentBtn.addEventListener('click', analyzeSentiment);
+    countNounsBtn.addEventListener('click', countNouns);
+    tokenInput.addEventListener('change', saveApiToken);
 });
 
-// Load and parse the TSV file using Papa Parse
-function loadReviews() {
-  fetch("reviews_test.tsv")
-    .then((response) => {
-      if (!response.ok) {
-        throw new Error(`Failed to load TSV file (HTTP ${response.status})`);
-      }
-      return response.text();
-    })
-    .then((tsvData) => {
-      Papa.parse(tsvData, {
-        header: true,
-        delimiter: "\t",
-        skipEmptyLines: true,
-        complete: (results) => {
-          // Check if data and 'text' column exist
-          if (!results.data || results.data.length === 0) {
-            throw new Error("No data found in TSV file.");
-          }
-          reviews = results.data
-            .map((row) => row.text)
-            .filter((text) => typeof text === "string" && text.trim() !== "");
-          
-          if (reviews.length === 0) {
-            throw new Error("No valid 'text' column found or reviews are empty.");
-          }
-          console.log("Loaded", reviews.length, "reviews");
-        },
-        error: (error) => {
-          console.error("Papa Parse error:", error);
-          showError("Failed to parse TSV file. Please check the file format.");
-        },
-      });
-    })
-    .catch((error) => {
-      console.error("TSV load error:", error);
-      showError(`Failed to load reviews: ${error.message}. Make sure reviews_test.tsv is in the same folder.`);
-    });
-}
-
-// Save API token to localStorage
-function saveApiToken() {
-  apiToken = apiTokenInput.value.trim();
-  if (apiToken) {
-    localStorage.setItem("hfApiToken", apiToken);
-  } else {
-    localStorage.removeItem("hfApiToken");
-  }
-}
-
-// Analyze a random review
-function analyzeRandomReview() {
-  // Hide previous error
-  hideError();
-
-  // Validation
-  if (!Array.isArray(reviews) || reviews.length === 0) {
-    showError("No reviews available. Please check that reviews_test.tsv is loaded correctly.");
-    return;
-  }
-
-  // Select a random review
-  const randomIndex = Math.floor(Math.random() * reviews.length);
-  const selectedReview = reviews[randomIndex];
-
-  // Display the review text
-  reviewText.textContent = selectedReview;
-
-  // Update UI for loading state
-  loadingElement.style.display = "block";
-  analyzeBtn.disabled = true;
-  sentimentResult.innerHTML = ""; // Clear previous result
-  sentimentResult.className = "sentiment-result"; // Reset classes
-
-  // Call the Hugging Face API
-  analyzeSentimentWithHF(selectedReview)
-    .then((apiResponse) => displaySentiment(apiResponse))
-    .catch((error) => {
-      console.error("API Error:", error);
-      showError(error.message || "Failed to analyze sentiment. Check your token or network.");
-    })
-    .finally(() => {
-      loadingElement.style.display = "none";
-      analyzeBtn.disabled = false;
-    });
-}
-
-// Call Hugging Face Inference API
-async function analyzeSentimentWithHF(text) {
-  const apiUrl = "https://api-inference.huggingface.co/models/siebert/sentiment-roberta-large-english";
-  
-  // Prepare headers
-  const headers = {
-    "Content-Type": "application/json",
-  };
-
-  // Add Authorization header only if token is provided
-  if (apiToken) {
-    headers["Authorization"] = `Bearer ${apiToken}`;
-  }
-
-  // Prepare request body
-  const body = JSON.stringify({ inputs: text });
-
-  // Make the API call
-  const response = await fetch(apiUrl, {
-    method: "POST",
-    headers: headers,
-    body: body,
-  });
-
-  // Handle HTTP errors
-  if (!response.ok) {
-    let errorMsg = `API Error (HTTP ${response.status})`;
+// Загрузка отзывов из TSV файла
+async function loadReviews() {
     try {
-      const errorData = await response.json();
-      errorMsg = errorData.error || errorMsg;
-    } catch (e) {
-      // Ignore if response is not JSON
+        const response = await fetch('reviews_test.tsv');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const tsvData = await response.text();
+        
+        const parsed = Papa.parse(tsvData, {
+            header: true,
+            delimiter: '\t',
+            skipEmptyLines: true
+        });
+        
+        reviews = parsed.data.filter(review => review.text && review.text.trim() !== '');
+        console.log(`Loaded ${reviews.length} reviews`);
+        
+    } catch (error) {
+        showError('Failed to load reviews data: ' + error.message);
     }
-    throw new Error(errorMsg);
-  }
-
-  // Parse the JSON response
-  let result;
-  try {
-    result = await response.json();
-  } catch (e) {
-    throw new Error("Invalid JSON response from API.");
-  }
-
-  // The API returns an array of arrays, e.g., [[{label: "POSITIVE", score: 0.99}]]
-  if (!Array.isArray(result) || result.length === 0 || !Array.isArray(result[0]) || result[0].length === 0) {
-    throw new Error("Unexpected response format from API.");
-  }
-
-  // Return the result in the format expected by displaySentiment (an array of predictions)
-  return result;
 }
 
-// Display sentiment result
-function displaySentiment(apiResult) {
-  // Default to neutral
-  let sentiment = "neutral";
-  let score = 0.5;
-  let label = "NEUTRAL";
-
-  // Extract the first prediction from the response
-  // Expected format: [[{label: 'POSITIVE', score: 0.99}]]
-  if (
-    Array.isArray(apiResult) &&
-    apiResult.length > 0 &&
-    Array.isArray(apiResult[0]) &&
-    apiResult[0].length > 0
-  ) {
-    const prediction = apiResult[0][0];
-
-    if (prediction && typeof prediction === "object") {
-      label = prediction.label ? prediction.label.toUpperCase() : "NEUTRAL";
-      score = typeof prediction.score === "number" ? prediction.score : 0.5;
-
-      // Determine final sentiment based on rules
-      if (label === "POSITIVE" && score > 0.5) {
-        sentiment = "positive";
-      } else if (label === "NEGATIVE" && score > 0.5) {
-        sentiment = "negative";
-      } else {
-        sentiment = "neutral";
-      }
+// Сохранение токена в localStorage
+function saveApiToken() {
+    const token = tokenInput.value.trim();
+    if (token) {
+        localStorage.setItem('hfApiToken', token);
+    } else {
+        localStorage.removeItem('hfApiToken');
     }
-  }
-
-  // Update the UI with the result
-  sentimentResult.classList.add(sentiment);
-  sentimentResult.innerHTML = `
-        <i class="fas ${getSentimentIcon(sentiment)} icon"></i>
-        <span>${sentiment.toUpperCase()} (${(score * 100).toFixed(1)}% confidence)</span>
-    `;
-
-  // СОХРАНЯЕМ РЕЗУЛЬТАТ В GOOGLE SHEETS
-  saveToGoogleSheets({
-    reviewText: reviewText.textContent,
-    sentiment: sentiment,
-    confidence: (score * 100).toFixed(1),
-    label: label,
-    tokenUsed: !!apiToken
-  });
 }
 
-// НОВАЯ ФУНКЦИЯ: Сохранение в Google Sheets
+// Выбор случайного отзыва
+function selectRandomReview() {
+    if (reviews.length === 0) {
+        showError('No reviews available');
+        return;
+    }
+    
+    const randomIndex = Math.floor(Math.random() * reviews.length);
+    currentReview = reviews[randomIndex];
+    reviewTextElement.textContent = currentReview.text;
+    
+    resetResults();
+    hideError();
+}
+
+// Сброс результатов
+function resetResults() {
+    sentimentResult.textContent = '❓';
+    nounResult.textContent = '❓';
+}
+
+// Анализ тональности
+async function analyzeSentiment() {
+    if (!currentReview) {
+        showError('Please select a review first');
+        return;
+    }
+    
+    const prompt = `Classify this review as positive, negative, or neutral. Return only one word. Review: "${currentReview.text}"`;
+    const result = await callApi(prompt, 'sentiment');
+    
+    if (result) {
+        updateSentimentResult(result);
+        
+        // Сохраняем результат в Google Sheets
+        saveToGoogleSheets({
+            reviewText: currentReview.text,
+            analysisType: 'sentiment',
+            result: result,
+            prompt: prompt
+        });
+    }
+}
+
+// Подсчет существительных
+async function countNouns() {
+    if (!currentReview) {
+        showError('Please select a review first');
+        return;
+    }
+    
+    const prompt = `Count the nouns in this review and return only **High** (>15), **Medium** (6-15), or **Low** (<6). Review: "${currentReview.text}"`;
+    const result = await callApi(prompt, 'nouns');
+    
+    if (result) {
+        updateNounResult(result);
+        
+        // Сохраняем результат в Google Sheets
+        saveToGoogleSheets({
+            reviewText: currentReview.text,
+            analysisType: 'nouns',
+            result: result,
+            prompt: prompt
+        });
+    }
+}
+
+// Вызов API Hugging Face
+async function callApi(prompt, type) {
+    const token = tokenInput.value.trim();
+    
+    hideError();
+    spinner.style.display = 'block';
+    disableButtons(true);
+    
+    try {
+        const headers = {
+            'Content-Type': 'application/json'
+        };
+        
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+        
+        const response = await fetch('https://api-inference.huggingface.co/models/tiiuae/falcon-7b-instruct', {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({ 
+                inputs: prompt,
+                parameters: {
+                    max_new_tokens: 50,
+                    temperature: 0.1,
+                    return_full_text: false
+                }
+            })
+        });
+        
+        if (response.status === 401 || response.status === 403) {
+            throw new Error('Invalid or missing API token');
+        }
+        
+        if (response.status === 429) {
+            throw new Error('Rate limit exceeded. Please try again later.');
+        }
+        
+        if (response.status === 503) {
+            throw new Error('Model is loading. Please try again in a few seconds.');
+        }
+        
+        if (!response.ok) {
+            throw new Error(`API error: ${response.status} ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        // Извлекаем сгенерированный текст
+        let resultText = '';
+        if (Array.isArray(data) && data.length > 0) {
+            resultText = data[0]?.generated_text || '';
+        } else if (data.generated_text) {
+            resultText = data.generated_text;
+        }
+        
+        // Удаляем промпт из результата, если он там есть
+        resultText = resultText.replace(prompt, '').trim().toLowerCase();
+        
+        // Извлекаем первое слово или фразу
+        const firstWord = resultText.split(/[\s,.;:!?]+/)[0] || '';
+        
+        return firstWord;
+        
+    } catch (error) {
+        showError(error.message);
+        return null;
+    } finally {
+        spinner.style.display = 'none';
+        disableButtons(false);
+    }
+}
+
+// Обновление результата тональности
+function updateSentimentResult(text) {
+    let icon = '❓';
+    let cleanText = text.toLowerCase().trim();
+    
+    if (cleanText.includes('positive') || cleanText === 'positive') {
+        icon = '👍';
+        sentimentResult.textContent = icon;
+        sentimentResult.className = 'positive';
+    } else if (cleanText.includes('negative') || cleanText === 'negative') {
+        icon = '👎';
+        sentimentResult.textContent = icon;
+        sentimentResult.className = 'negative';
+    } else if (cleanText.includes('neutral') || cleanText === 'neutral') {
+        icon = '❓';
+        sentimentResult.textContent = icon;
+        sentimentResult.className = 'neutral';
+    } else {
+        sentimentResult.textContent = icon;
+        sentimentResult.className = '';
+    }
+}
+
+// Обновление результата подсчета существительных
+function updateNounResult(text) {
+    let icon = '❓';
+    let cleanText = text.toLowerCase().trim();
+    
+    if (cleanText.includes('high') || cleanText === 'high') {
+        icon = '🟢';
+        nounResult.textContent = icon;
+        nounResult.className = 'high';
+    } else if (cleanText.includes('medium') || cleanText === 'medium') {
+        icon = '🟡';
+        nounResult.textContent = icon;
+        nounResult.className = 'medium';
+    } else if (cleanText.includes('low') || cleanText === 'low') {
+        icon = '🔴';
+        nounResult.textContent = icon;
+        nounResult.className = 'low';
+    } else {
+        nounResult.textContent = icon;
+        nounResult.className = '';
+    }
+}
+
+// Сохранение в Google Sheets
 async function saveToGoogleSheets(data) {
-  // Создаем индикатор сохранения
-  const saveIndicator = document.createElement('div');
-  saveIndicator.className = 'save-indicator';
-  saveIndicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving to Google Sheets...';
-  sentimentResult.appendChild(saveIndicator);
-
-  try {
-    // Отправляем данные в Google Apps Script
-    const response = await fetch(GOOGLE_SHEETS_URL, {
-      method: 'POST',
-      mode: 'no-cors', // Важно для Google Apps Script!
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        timestamp: new Date().toISOString(),
-        reviewText: data.reviewText,
-        sentiment: data.sentiment,
-        confidence: data.confidence,
-        label: data.label,
-        tokenUsed: data.tokenUsed
-      })
-    });
-
-    // Показываем успешное сохранение
-    setTimeout(() => {
-      if (saveIndicator.parentNode) {
-        saveIndicator.innerHTML = '<i class="fas fa-check" style="color: green;"></i> Saved to Google Sheets!';
+    const token = tokenInput.value.trim();
+    
+    // Создаем индикатор сохранения
+    const saveIndicator = document.createElement('div');
+    saveIndicator.className = 'save-indicator';
+    saveIndicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+    document.querySelector('.results').appendChild(saveIndicator);
+    
+    try {
+        // Подготавливаем данные для отправки
+        const sheetData = {
+            timestamp: new Date().toISOString(),
+            reviewText: data.reviewText,
+            analysisType: data.analysisType === 'sentiment' ? 'Sentiment Analysis' : 'Noun Count',
+            result: data.result,
+            prompt: data.prompt,
+            tokenUsed: !!token
+        };
+        
+        // Отправляем в Google Sheets
+        await fetch(GOOGLE_SHEETS_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(sheetData)
+        });
+        
+        // Показываем успех
+        saveIndicator.innerHTML = '<i class="fas fa-check" style="color: green;"></i> Saved!';
+        
         setTimeout(() => {
-          if (saveIndicator.parentNode) {
-            saveIndicator.remove();
-          }
+            if (saveIndicator.parentNode) {
+                saveIndicator.remove();
+            }
         }, 2000);
-      }
-    }, 1000);
-
-  } catch (error) {
-    console.error('Error saving to Google Sheets:', error);
-    saveIndicator.innerHTML = '<i class="fas fa-exclamation-triangle" style="color: orange;"></i> Save failed';
-    setTimeout(() => {
-      if (saveIndicator.parentNode) {
-        saveIndicator.remove();
-      }
-    }, 3000);
-  }
+        
+    } catch (error) {
+        console.error('Error saving to Google Sheets:', error);
+        saveIndicator.innerHTML = '<i class="fas fa-exclamation-triangle" style="color: orange;"></i> Save failed';
+        
+        setTimeout(() => {
+            if (saveIndicator.parentNode) {
+                saveIndicator.remove();
+            }
+        }, 3000);
+    }
 }
 
-// Get appropriate icon for sentiment bucket
-function getSentimentIcon(sentiment) {
-  switch (sentiment) {
-    case "positive":
-      return "fa-thumbs-up";
-    case "negative":
-      return "fa-thumbs-down";
-    default:
-      return "fa-question-circle";
-  }
+// Блокировка/разблокировка кнопок
+function disableButtons(disabled) {
+    const buttons = [randomReviewBtn, analyzeSentimentBtn, countNounsBtn];
+    buttons.forEach(button => {
+        if (button) button.disabled = disabled;
+    });
 }
 
-// Show error message
+// Показ ошибки
 function showError(message) {
-  errorElement.textContent = message;
-  errorElement.style.display = "block";
+    errorDiv.textContent = message;
+    errorDiv.style.display = 'block';
 }
 
-// Hide error message
+// Скрытие ошибки
 function hideError() {
-  errorElement.style.display = "none";
+    errorDiv.textContent = '';
+    errorDiv.style.display = 'none';
 }
